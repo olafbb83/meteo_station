@@ -1,8 +1,8 @@
-#define BLYNK_PRINT Serial    // <-- Enables core Blynk logging to Serial Monitor
-#define BLYNK_DEBUG
 #define BLYNK_TEMPLATE_ID "TMPL5OdiOe_Aj"
 #define BLYNK_TEMPLATE_NAME "OB meteo station"
-#define BLYNK_AUTH_TOKEN "Kp4j_T3NOuXl0AOv5OU3muWzzbJea5Q2"
+
+#include "secrets.h"
+#define BLYNK_AUTH_TOKEN SECRET_BLYNK_TOKEN
 
 // 2. NOW INCLUDE LIBRARIES Safely
 #include <WiFi.h>
@@ -31,12 +31,12 @@ RTC_DATA_ATTR int bootCountSincePowerOn = 0;
 
 // --- Default fallback configuration credentials ---
 // Leave blank to test your portal setup configuration cleanly!
-const char* defaultSSID = "MOVISTAR_7460";
-const char* defaultPASS = "eAT268fE6i7DtcoJpMma";
+const char* defaultSSID = SECRET_SSID;
+const char* defaultPASS = SECRET_PASS;
+String tsAPIKey = SECRET_TS_KEY;
 
 // --- ThingSpeak Cloud Configuration ---
 const char* thingSpeakAddress = "api.thingspeak.com";
-String tsAPIKey = "U68YOO77JDNGH4PB";
 unsigned long lastCloudUpdateTime = 0;
 const unsigned long cloudUpdateInterval = 300000; // 5 minutes in milliseconds
 
