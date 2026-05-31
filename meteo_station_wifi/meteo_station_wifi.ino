@@ -2,6 +2,7 @@
 #define BLYNK_TEMPLATE_NAME "OB meteo station"
 
 #include "secrets.h"
+#include "settings.h"
 #define BLYNK_AUTH_TOKEN SECRET_BLYNK_TOKEN
 
 // 2. NOW INCLUDE LIBRARIES Safely
@@ -75,6 +76,14 @@ const int daylightOffset_sec = 3600;
 unsigned long lastAnimationToggle = 0;
 bool heartIsFilled = true;
 
+// --- Zambretti Forecast Engine Config ---
+#define TREND_WINDOW_SIZE 36 // 3 hours of data (12 samples/hour * 3)
+float pressureHistory[TREND_WINDOW_SIZE];
+int zambrettiCount = 0;
+
+enum Trend { TREND_FALLING, TREND_STEADY, TREND_RISING };
+String zambrettiForecast = "Calibrating...";
+
 // --- PROTOTYPES / FORWARD DECLARATIONS ---
 void updateDisplayConnecting();
 void updateDisplayPortal();
@@ -115,6 +124,36 @@ String generateSVGChart(float data[], int count, String strokeColor, float minVa
   }
   svg += "</g></svg>";
   return svg;
+}
+
+String calculateZambretti(float currentPressure, float pressure3HoursAgo) {
+    float delta = currentPressure - pressure3HoursAgo;
+    Trend trend = TREND_STEADY;
+    
+    // Define thresholds: change greater than 1.5 hPa over 3 hours is significant
+    if (delta <= -1.5) trend = TREND_FALLING;
+    else if (delta >= 1.5) trend = TREND_RISING;
+
+    // 1. FALLING PRESSURE (Weather worsening)
+    if (trend == TREND_FALLING) {
+        if (currentPressure > 1020 + LOCAL_PRESSURE_OFFSET) return "Fair, Worsening";
+        if (currentPressure <= 1020 + LOCAL_PRESSURE_OFFSET && currentPressure > 1010 + LOCAL_PRESSURE_OFFSET) return "Showers Likely";
+        if (currentPressure <= 1010 + LOCAL_PRESSURE_OFFSET && currentPressure > 1000 + LOCAL_PRESSURE_OFFSET) return "Rain, Wind";
+        return "Storm Approaching!";
+    }
+    
+    // 2. RISING PRESSURE (Weather improving)
+    if (trend == TREND_RISING) {
+        if (currentPressure < 1000 + LOCAL_PRESSURE_OFFSET) return "Clearing Storm";
+        if (currentPressure >= 1000 + LOCAL_PRESSURE_OFFSET && currentPressure < 1015 + LOCAL_PRESSURE_OFFSET) return "Fairing Up";
+        if (currentPressure >= 1015 + LOCAL_PRESSURE_OFFSET && currentPressure < 1025 + LOCAL_PRESSURE_OFFSET) return "Settled Fine";
+        return "High Pressure, Sunny";
+    }
+    
+    // 3. STEADY PRESSURE (Weather staying the same)
+    if (currentPressure > 1015 + LOCAL_PRESSURE_OFFSET) return "Settled Fine";
+    if (currentPressure <= 1015 + LOCAL_PRESSURE_OFFSET && currentPressure > 1008 + LOCAL_PRESSURE_OFFSET) return "Partly Cloudy";
+    return "Unsettled/Rainy";
 }
 
 void updateThingSpeakCloud(float t, float h, float p) {
@@ -343,6 +382,10 @@ void handleRoot() {
   html += "<div class='card alt'><div class='label'>Altitude</div><div class='value'>" + String(alt, 0) + "<span class='unit'>m</span></div></div>";
   html += "</div>";
 
+  html += "<div class='card' style='width:100%;max-width:450px;border-left-color:#e2e8f0;margin-bottom:15px;box-sizing:border-box;'>";
+  html += "<div class='label'>Zambretti Forecast</div>";
+  html += "<div class='value' style='font-size:18px;'>" + zambrettiForecast + "</div></div>";
+
   float minT = 20.0, maxT = 30.0;
   float minP = 980.0, maxP = 1020.0;
   float minH = 30.0, maxH = 70.0;
@@ -500,7 +543,7 @@ void setup() {
     
     savedSSID = ""; 
     savedPASS = "";
-    tsAPIKey = "U68YOO77JDNGH4PB"; // Reset to default fallback key
+    tsAPIKey = SECRET_TS_KEY; // Reset to default fallback key
     
     bootCountSincePowerOn = 0; // Reset the counter
     
@@ -589,6 +632,24 @@ void loop() {
         Serial.println("[CLOUD] Data captured locally, but skipped cloud upload (API key is empty).");
       }
       if (blynkAuthKey != "") updateBlynkCloud(currentT, currentH, currentP);
+
+      // Execute this block inside your 5-minute timer loop!
+      float currentPressure = bme.readPressure() / 100.0F; // Get hPa
+
+      // Shift history array to make room for the new reading
+      for (int i = 0; i < TREND_WINDOW_SIZE - 1; i++) {
+          pressureHistory[i] = pressureHistory[i + 1];
+      }
+      pressureHistory[TREND_WINDOW_SIZE - 1] = currentPressure;
+
+      if (zambrettiCount < TREND_WINDOW_SIZE) {
+          zambrettiCount++;
+          zambrettiForecast = "Gathering Data (" + String(zambrettiCount) + "/" + String(TREND_WINDOW_SIZE) + ")";
+      } else {
+          // We have a full 3 hours of data! Run the engine.
+          float pressure3HoursAgo = pressureHistory[0];
+          zambrettiForecast = calculateZambretti(currentPressure, pressure3HoursAgo);
+      }
     }
 
     // 2.5-Second Main Screen Refresh & Heart Animation
