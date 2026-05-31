@@ -8,6 +8,9 @@
 #include <Adafruit_SSD1306.h>
 #include <Preferences.h>
 
+// This variable survives CPU reboots and handles our escape hatch!
+RTC_DATA_ATTR int bootCountSincePowerOn = 0;
+
 // --- Default fallback configuration credentials ---
 // Leave blank to test your portal setup configuration cleanly!
 const char* defaultSSID = "MOVISTAR_7460";
@@ -15,7 +18,7 @@ const char* defaultPASS = "eAT268fE6i7DtcoJpMma";
 
 // --- ThingSpeak Cloud Configuration ---
 const char* thingSpeakAddress = "api.thingspeak.com";
-const char* tsAPIKey = "U68YOO77JDNGH4PB";
+String tsAPIKey = "U68YOO77JDNGH4PB";
 unsigned long lastCloudUpdateTime = 0;
 const unsigned long cloudUpdateInterval = 300000; // 5 minutes in milliseconds
 
@@ -163,10 +166,11 @@ void handlePortalRoot() {
   html += "<style>body{font-family:sans-serif; background:#0f172a; color:#f8fafc; padding:20px; text-align:center;}";
   html += "input{width:100%; max-width:300px; padding:12px; margin:8px 0; border-radius:8px; border:1px solid #334155; background:#1e293b; color:#fff; box-sizing:border-box;}";
   html += "button{background:#38bdf8; color:#0f172a; font-weight:bold; border:none; padding:12px 30px; border-radius:8px; margin-top:10px; cursor:pointer;}</style></head><body>";
-  html += "<h2>Meteo Station Setup</h2><p>Enter your home Wi-Fi details below:</p>";
+  html += "<h2>Meteo Station Setup</h2><p>Enter your local Wi-Fi & Cloud details:</p>";
   html += "<form action='/save' method='POST'>";
   html += "<input type='text' name='ssid' placeholder='Wi-Fi Network Name (SSID)' required><br>";
   html += "<input type='password' name='pass' placeholder='Wi-Fi Password'><br>";
+  html += "<input type='text' name='tskey' placeholder='ThingSpeak Write API Key'><br>";
   html += "<button type='submit'>Connect Station</button></form></body></html>";
   server.send(200, "text/html", html);
 }
@@ -175,39 +179,46 @@ void handlePortalSave() {
   if (server.hasArg("ssid")) {
     String reqSSID = server.arg("ssid");
     String reqPASS = server.arg("pass");
+    String reqKEY  = server.arg("tskey");
 
     preferences.begin("wifi-creds", false);
     preferences.putString("ssid", reqSSID);
     preferences.putString("password", reqPASS);
+    
+    // If the user provided a custom key, save it!
+    if (reqKEY != "") {
+      preferences.putString("tskey", reqKEY);
+      tsAPIKey = reqKEY;
+    }
     preferences.end();
 
     String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
     html += "<style>body{font-family:sans-serif; background:#0f172a; color:#f8fafc; padding:20px; text-align:center;}</style></head><body>";
     html += "<h2>Credentials Saved!</h2><p>The Meteo Station is now restarting to join your network.</p></body></html>";
     
-    // 1. Send the HTML data to your phone first
     server.send(200, "text/html", html);
-    
-    // 2. Allow the server background buffer to fully push the data out the radio
     delay(500); 
     server.close();
-    
-    // 3. Cleanly disconnect the Access Point network to prevent locks
     WiFi.softAPdisconnect(true);
     delay(500);
     
     Serial.println("[SYSTEM] Rebooting safely now...");
-    
-    // 4. Trigger the hardware execution restart
     ESP.restart();
   }
 }
+
 
 void initWiFi() {
 
   preferences.begin("wifi-creds", false);
   savedSSID = preferences.getString("ssid", "");
   savedPASS = preferences.getString("password", "");
+
+  String savedKEY = preferences.getString("tskey", "");
+  if (savedKEY != "") {
+    tsAPIKey = savedKEY;
+    Serial.println("[SYSTEM] Loaded custom ThingSpeak API Key from flash.");
+  }
     
   if (savedSSID == "" && String(defaultSSID) != "") {
     preferences.putString("ssid", defaultSSID);
@@ -217,7 +228,6 @@ void initWiFi() {
   }
   preferences.end();
   
-  // --- FIX: CRASH PROTECTION FOR EMPTY TESTING STRINGS ---
   // If there are absolutely no saved or default credentials, DO NOT call WiFi.begin()
   if (savedSSID == "") {
     Serial.println("[PORTAL] No credentials available. Skipping connection phase...");
@@ -416,7 +426,10 @@ void setup() {
   
   Serial.println("\n--- Serial Monitor Initialized Successfully ---");
 
+  // --- 1. HARDWARE CORE INITIALIZATION FIRST ---
+  // We must wake up I2C and the display immediately so the escape hatch can use them!
   Wire.begin(I2C_SDA, I2C_SCL);
+  
   if (!bme.begin(0x76, &Wire)) {
     Serial.println("[ERROR] Could not find a valid BME280 sensor, check wiring!");
   }
@@ -426,16 +439,40 @@ void setup() {
   
   lastPressure = bme.readPressure() / 100.0F;
 
-  // ==========================================
-  // --- SAFE PORTAL TESTING FORCE BLOCK ---
-  // ==========================================
-  preferences.begin("wifi-creds", false); 
-  preferences.clear(); 
-  preferences.end();
-  savedSSID = ""; 
-  savedPASS = "";
-  // ==========================================
+  Serial.println("\n--- Checking Boot Sequence Escape Hatch ---");
 
+  // Increment our reboot counter
+  bootCountSincePowerOn++;
+  Serial.print("[SYSTEM] Boot sequence count: ");
+  Serial.println(bootCountSincePowerOn);
+
+  // --- 2. HARDWARE DOUBLE-RESET ESCAPE HATCH DETECTION ---
+  if (bootCountSincePowerOn >= 2) {
+    Serial.println("[ESCAPE HATCH ALERT] Double-reset detected! Wiping credentials...");
+    
+    preferences.begin("wifi-creds", false); 
+    preferences.clear(); 
+    preferences.end();
+    
+    savedSSID = ""; 
+    savedPASS = "";
+    tsAPIKey = "U68YOO77JDNGH4PB"; // Reset to default fallback key
+    
+    bootCountSincePowerOn = 0; // Reset the counter
+    
+    // SAFE TO USE NOW: Show the confirmation on the OLED screen
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+    display.setCursor(10, 25);
+    display.print("SETTINGS CLEARED!");
+    display.setCursor(10, 40);
+    display.print("Opening Portal...");
+    display.display();
+    delay(2000);
+  }
+
+  // --- 3. NETWORK STARTUP ---
   initWiFi();
 
   if (isConfigured) {
@@ -447,13 +484,19 @@ void setup() {
     Serial.println("[PORTAL] Standing by for user connection at 192.168.4.1...");
   }
 
+  // --- 4. INITIAL DATA LOGGING ---
   float currentT = bme.readTemperature();
   float currentP = bme.readPressure() / 100.0F;
   float currentH = bme.readHumidity();
 
   logHistoryData(currentT, currentP, currentH);
-
-  updateThingSpeakCloud(currentT, currentH, currentP);
+  
+// Only push to cloud if we have an internet connection AND a key is actually written
+  if (isConfigured && tsAPIKey != "") {
+    updateThingSpeakCloud(currentT, currentH, currentP);
+  } else {
+    Serial.println("[CLOUD] Skipping initial update: No internet or API key is empty.");
+  }
 
   lastHistoryLogTime = millis(); 
 }
@@ -463,19 +506,31 @@ void loop() {
 
   // --- ROUTE A: Normal Operational Behavior ---
   if (isConfigured) {
+
+    // --- Clean, single-run execution to clear escape hatch flag ---
+    if (bootCountSincePowerOn > 0 && millis() > 3500) {
+      bootCountSincePowerOn = 0;
+      Serial.println("[SYSTEM] System stable. Escape hatch counter cleared.");
+    }
+
+    // 5-Minute Sensor Logging & Cloud Pushing Engine
     if (millis() - lastHistoryLogTime >= logInterval) {
       lastHistoryLogTime = millis();
       float currentT = bme.readTemperature();
       float currentP = bme.readPressure() / 100.0F;
       float currentH = bme.readHumidity();
 
-      // Keep your local history tracking active
       logHistoryData(currentT, currentP, currentH);
 
-      // --- Push the exact same points up to the global cloud ---
-      updateThingSpeakCloud(currentT, currentH, currentP);
+      // Explicit Cloud upload validation
+      if (tsAPIKey != "") {
+        updateThingSpeakCloud(currentT, currentH, currentP);
+      } else {
+        Serial.println("[CLOUD] Data captured locally, but skipped cloud upload (API key is empty).");
+      }
     }
 
+    // 2.5-Second Main Screen Refresh & Heart Animation
     if (millis() - lastAnimationToggle >= 2500) {
       lastAnimationToggle = millis(); 
       heartIsFilled = !heartIsFilled; 
