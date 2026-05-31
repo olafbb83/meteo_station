@@ -1,5 +1,13 @@
+#define BLYNK_PRINT Serial    // <-- Enables core Blynk logging to Serial Monitor
+#define BLYNK_DEBUG
+#define BLYNK_TEMPLATE_ID "TMPL5OdiOe_Aj"
+#define BLYNK_TEMPLATE_NAME "OB meteo station"
+#define BLYNK_AUTH_TOKEN "Kp4j_T3NOuXl0AOv5OU3muWzzbJea5Q2"
+
+// 2. NOW INCLUDE LIBRARIES Safely
 #include <WiFi.h>
 #include <WebServer.h>
+#include <BlynkSimpleEsp32.h> 
 #include <time.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
@@ -7,6 +15,16 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Preferences.h>
+
+// 3. HARDWARE CONFIGURATIONS BELOW
+#define I2C_SDA 8
+#define I2C_SCL 9
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+#define SCREEN_ADDRESS 0x3C
+#define SEALEVELPRESSURE_HPA (1013.25)
+#define MAX_HISTORY_POINTS 144
 
 // This variable survives CPU reboots and handles our escape hatch!
 RTC_DATA_ATTR int bootCountSincePowerOn = 0;
@@ -22,15 +40,6 @@ String tsAPIKey = "U68YOO77JDNGH4PB";
 unsigned long lastCloudUpdateTime = 0;
 const unsigned long cloudUpdateInterval = 300000; // 5 minutes in milliseconds
 
-#define I2C_SDA 8
-#define I2C_SCL 9
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET    -1
-#define SCREEN_ADDRESS 0x3C
-#define SEALEVELPRESSURE_HPA (1013.25)
-#define MAX_HISTORY_POINTS 144
-
 // --- Automatic Wi-Fi Onboarding Configuration ---
 bool isConfigured = false;
 unsigned long portalStartTime = 0;
@@ -39,6 +48,8 @@ const char* apSSID = "Meteo-Station-Setup";
 Preferences preferences;
 String savedSSID = "";
 String savedPASS = "";
+
+String blynkAuthKey = BLYNK_AUTH_TOKEN;
 
 float tempHistory[MAX_HISTORY_POINTS];
 float presHistory[MAX_HISTORY_POINTS];
@@ -171,25 +182,40 @@ void handlePortalRoot() {
   html += "<input type='text' name='ssid' placeholder='Wi-Fi Network Name (SSID)' required><br>";
   html += "<input type='password' name='pass' placeholder='Wi-Fi Password'><br>";
   html += "<input type='text' name='tskey' placeholder='ThingSpeak Write API Key'><br>";
+  html += "<input type='text' name='blynkkey' placeholder='Blynk Auth Token'><br>";
   html += "<button type='submit'>Connect Station</button></form></body></html>";
   server.send(200, "text/html", html);
 }
 
 void handlePortalSave() {
   if (server.hasArg("ssid")) {
-    String reqSSID = server.arg("ssid");
-    String reqPASS = server.arg("pass");
-    String reqKEY  = server.arg("tskey");
+    String reqSSID  = server.arg("ssid");
+    String reqPASS  = server.arg("pass");
+    String reqKEY   = server.arg("tskey");
+    String reqBLYNK = server.arg("blynkkey"); // Capture the Blynk token
 
     preferences.begin("wifi-creds", false);
     preferences.putString("ssid", reqSSID);
     preferences.putString("password", reqPASS);
     
-    // If the user provided a custom key, save it!
+    // --- ThingSpeak Key Management ---
     if (reqKEY != "") {
       preferences.putString("tskey", reqKEY);
       tsAPIKey = reqKEY;
+    } else {
+      preferences.putString("tskey", "");
+      tsAPIKey = "";
     }
+
+    // --- Blynk Token Management ---
+    if (reqBLYNK != "") {
+      preferences.putString("blynkkey", reqBLYNK);
+      blynkAuthKey = reqBLYNK; // Update our active runtime variable
+    } else {
+      preferences.putString("blynkkey", "");
+      blynkAuthKey = ""; // Intentionally blanked out by the user
+    }
+    
     preferences.end();
 
     String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
@@ -207,28 +233,46 @@ void handlePortalSave() {
   }
 }
 
+void updateBlynkCloud(float t, float h, float p) {
+  // Check if Blynk engine is actively connected to the server
+  if (Blynk.connected()) {
+    Blynk.virtualWrite(V1, t);       // Send temp to pipe V1
+    Blynk.virtualWrite(V2, (int)h);  // Send humidity to pipe V2
+    Blynk.virtualWrite(V3, p);       // Send pressure to pipe V3
+    Serial.println("[BLYNK CLOUD] Real-time metrics pushed to smartphone app!");
+  }
+}
 
 void initWiFi() {
-
   preferences.begin("wifi-creds", false);
   savedSSID = preferences.getString("ssid", "");
   savedPASS = preferences.getString("password", "");
-
+  
+  // --- Read the saved ThingSpeak key if it exists ---
   String savedKEY = preferences.getString("tskey", "");
   if (savedKEY != "") {
     tsAPIKey = savedKEY;
     Serial.println("[SYSTEM] Loaded custom ThingSpeak API Key from flash.");
   }
-    
+  
+  // --- Read the saved Blynk token if it exists ---
+  String savedBLYNK = preferences.getString("blynkkey", "");
+  if (savedBLYNK != "") {
+    blynkAuthKey = savedBLYNK;
+    Serial.println("[SYSTEM] Loaded custom Blynk Auth Token from flash.");
+  }
+  
+  // Fallback check for default compilation credentials
   if (savedSSID == "" && String(defaultSSID) != "") {
     preferences.putString("ssid", defaultSSID);
     preferences.putString("password", defaultPASS);
     savedSSID = defaultSSID;
     savedPASS = defaultPASS;
   }
-  preferences.end();
   
-  // If there are absolutely no saved or default credentials, DO NOT call WiFi.begin()
+  preferences.end(); // Safely lock the storage engine
+  
+  // Crash protection check
   if (savedSSID == "") {
     Serial.println("[PORTAL] No credentials available. Skipping connection phase...");
   } else {
@@ -251,7 +295,7 @@ void initWiFi() {
     return;
   }
 
-  // --- AP FALLBACK ACTIVATION ---
+  // AP Fallback Activation
   Serial.println("[PORTAL] Launching Access Point Hotspot...");
   WiFi.mode(WIFI_AP);
   WiFi.softAP(apSSID);
@@ -477,6 +521,11 @@ void setup() {
 
   if (isConfigured) {
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
+    // Wake up the Blynk background engine
+    Blynk.config(blynkAuthKey.c_str());
+    Blynk.connect();
+
     server.on("/", handleRoot);
     server.begin();
     Serial.println("[SUCCESS] HTTP Web Server Started!");
@@ -492,21 +541,32 @@ void setup() {
   logHistoryData(currentT, currentP, currentH);
   
 // Only push to cloud if we have an internet connection AND a key is actually written
-  if (isConfigured && tsAPIKey != "") {
-    updateThingSpeakCloud(currentT, currentH, currentP);
+  // Only push to cloud platforms if we actually have an active internet router connection
+  if (isConfigured) {
+    if (tsAPIKey != "") {
+      updateThingSpeakCloud(currentT, currentH, currentP);
+    } else {
+      Serial.println("[CLOUD] Skipping initial ThingSpeak update: Key is empty.");
+    }
+
+    if (blynkAuthKey != "") {
+      updateBlynkCloud(currentT, currentH, currentP);
+    } else {
+      Serial.println("[CLOUD] Skipping initial Blynk update: Auth Key is empty.");
+    }
   } else {
-    Serial.println("[CLOUD] Skipping initial update: No internet or API key is empty.");
+    Serial.println("[CLOUD] Skipping initial cloud updates: Station running in local portal mode.");
   }
 
   lastHistoryLogTime = millis(); 
 }
 
 void loop() {
-  server.handleClient(); 
+  server.handleClient();
 
   // --- ROUTE A: Normal Operational Behavior ---
   if (isConfigured) {
-
+    Blynk.run();
     // --- Clean, single-run execution to clear escape hatch flag ---
     if (bootCountSincePowerOn > 0 && millis() > 3500) {
       bootCountSincePowerOn = 0;
@@ -528,6 +588,7 @@ void loop() {
       } else {
         Serial.println("[CLOUD] Data captured locally, but skipped cloud upload (API key is empty).");
       }
+      if (blynkAuthKey != "") updateBlynkCloud(currentT, currentH, currentP);
     }
 
     // 2.5-Second Main Screen Refresh & Heart Animation
