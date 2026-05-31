@@ -10,7 +10,7 @@ Featuring a **bulletproof software onboarding captive portal** and an **RTC hard
 
 * **Quad-Interface Telemetry:**
     * **On-Device OLED:** Animated 128x64 display tracking metrics, a beating pulse heartbeat icon, local IP address, network time synchronization (NTP), and live barometric trend indicators (`^` / `v`).
-    * **Local Web Server (`192.168.4.1`):** A custom dark-themed local dashboard showing responsive climate cards alongside dynamically rendered **24-hour SVG line charts** (generated natively on the ESP32 chip).
+    * **Local Web Server (`192.168.1.50`):** A custom dark-themed local dashboard showing responsive climate cards alongside dynamically rendered **24-hour SVG line charts** (generated natively on the ESP32 chip).
     * **ThingSpeak Analytics:** Long-term global historical database logging for tracking multi-week weather patterns.
     * **Blynk Mobile App:** Premium smartphone dashboard featuring live-updating gauges, status lights, and real-time interactive charting over cellular data.
 * **Commercial Onboarding Portal:** If the station cannot connect to a saved Wi-Fi network, it automatically drops into Access Point Mode, broadcasting its own secure configuration hotspot network (`Meteo-Station-Setup`) allowing any smartphone to dynamically input local Wi-Fi credentials, a custom ThingSpeak API Key, and a custom Blynk Auth Token.
