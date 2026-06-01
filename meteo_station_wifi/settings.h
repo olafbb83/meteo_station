@@ -14,6 +14,12 @@
 #define HUM_HIGH  85.0   // High humidity -> rain/fog more likely
 #define HUM_LOW   40.0   // Low humidity  -> dry/clearing confirmed
 
+// --- MQ-135 Air Quality Sensor ---
+#define MQ135_PIN      3      // GPIO pin for MQ-135 AOUT
+#define MQ135_RL      10.0    // Load resistance on board (kΩ)
+#define MQ135_R0      10.0    // Sensor resistance in clean air (kΩ) — tune after 24-48h burn-in
+#define MQ135_SAMPLES 10      // ADC samples to average per reading
+
 // --- Diurnal pressure correction table (hPa, one value per hour 0-23) ---
 // Subtract from raw pressure before feeding into Zambretti.
 // Based on standard atmospheric tide model for ~40°N latitude (Sabadell 41.5°N).

@@ -17,6 +17,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Preferences.h>
 #include <Adafruit_VEML7700.h>
+#include <LittleFS.h>
 
 // 3. HARDWARE CONFIGURATIONS BELOW
 #define I2C_SDA 8
@@ -105,6 +106,7 @@ float calculateHeatIndex(float t, float h);
 float readLux();
 String applyLuxModifier(String forecast, float lux);
 String applyHumidityModifier(String forecast, float hum);
+float readAQI();
 
 // --- SVG CHART GENERATOR ENGINE ---
 String generateSVGChart(float data[], int count, String strokeColor, float minVal, float maxVal, String unit) {
@@ -297,6 +299,36 @@ float calculateHeatIndex(float t, float h) {
 // --- LUX READER ---
 float readLux() {
   return veml.readLux();
+}
+
+// --- MQ-135 AIR QUALITY INDEX ---
+float readAQI() {
+  // Average multiple ADC samples to reduce ESP32 ADC noise
+  long sum = 0;
+  for (int i = 0; i < MQ135_SAMPLES; i++) {
+    sum += analogRead(MQ135_PIN);
+    delay(5);
+  }
+  float avg = sum / (float)MQ135_SAMPLES;
+
+  // Convert ADC to sensor resistance Rs
+  float voltage = avg * (3.3 / 4095.0);
+  Serial.print("[AQI] ADC avg: "); Serial.print(avg, 0);
+  Serial.print("  V: "); Serial.println(voltage, 3);
+  if (voltage <= 0) return 0;
+  float rs = ((3.3 - voltage) / voltage) * MQ135_RL;
+
+  // Rs/R0 ratio — lower ratio means more pollution
+  float ratio = rs / MQ135_R0;
+
+  Serial.print("[AQI] ADC avg: "); Serial.print(avg, 0);
+  Serial.print("  V: "); Serial.print(voltage, 3);
+  Serial.print("  Rs: "); Serial.print(rs, 2);
+  Serial.print("  Rs/R0: "); Serial.println(ratio, 3);
+
+  // Map ratio to AQI 0-100 (ratio ~2.0 = clean, ~0.3 = very polluted)
+  float aqi = (1.0 - (ratio / 2.0)) * 100.0;
+  return constrain(aqi, 0.0, 100.0);
 }
 
 void handlePortalRoot() {
@@ -539,6 +571,18 @@ void logHistoryData(float currentTemp, float currentPres, float currentHum, floa
     luxHistory[MAX_HISTORY_POINTS - 1] = currentLux;
   }
   Serial.println("[SYSTEM LOG] Captured history data point (Temp, Pres, Hum, Lux).");
+
+  // Persist to flash
+  File f = LittleFS.open("/history.bin", "w");
+  if (f) {
+    f.write((uint8_t*)&historyCount, sizeof(historyCount));
+    f.write((uint8_t*)tempHistory,   sizeof(tempHistory));
+    f.write((uint8_t*)presHistory,   sizeof(presHistory));
+    f.write((uint8_t*)humHistory,    sizeof(humHistory));
+    f.write((uint8_t*)luxHistory,    sizeof(luxHistory));
+    f.close();
+    Serial.println("[LittleFS] History saved to flash.");
+  }
 }
 
 void updateDisplayConnecting() {
@@ -620,6 +664,8 @@ void setup() {
   // --- 1. HARDWARE CORE INITIALIZATION FIRST ---
   // We must wake up I2C and the display immediately so the escape hatch can use them!
   Wire.begin(I2C_SDA, I2C_SCL);
+  pinMode(MQ135_PIN, INPUT);
+  analogSetPinAttenuation(MQ135_PIN, ADC_11db); // full 0-3.3V range
   
   if (!bme.begin(0x76, &Wire)) {
     Serial.println("[ERROR] Could not find a valid BME280 sensor, check wiring!");
@@ -651,7 +697,12 @@ void setup() {
     preferences.begin("wifi-creds", false); 
     preferences.clear(); 
     preferences.end();
-    
+
+    if (LittleFS.begin(true)) {
+      LittleFS.remove("/history.bin");
+      Serial.println("[LittleFS] History file deleted.");
+    }
+
     savedSSID = ""; 
     savedPASS = "";
     tsAPIKey = SECRET_TS_KEY; // Reset to default fallback key
@@ -688,6 +739,22 @@ void setup() {
   }
 
   // --- 4. INITIAL DATA LOGGING ---
+  // Init LittleFS and load persisted history if available
+  if (LittleFS.begin(true)) {
+    File f = LittleFS.open("/history.bin", "r");
+    if (f && f.size() == sizeof(historyCount) + sizeof(tempHistory) + sizeof(presHistory) + sizeof(humHistory) + sizeof(luxHistory)) {
+      f.read((uint8_t*)&historyCount, sizeof(historyCount));
+      f.read((uint8_t*)tempHistory,   sizeof(tempHistory));
+      f.read((uint8_t*)presHistory,   sizeof(presHistory));
+      f.read((uint8_t*)humHistory,    sizeof(humHistory));
+      f.read((uint8_t*)luxHistory,    sizeof(luxHistory));
+      Serial.println("[LittleFS] History loaded from flash.");
+    }
+    if (f) f.close();
+  } else {
+    Serial.println("[ERROR] LittleFS mount failed.");
+  }
+
   float currentT = bme.readTemperature();
   float currentP = bme.readPressure() / 100.0F;
   float currentH = bme.readHumidity();
@@ -797,7 +864,8 @@ void loop() {
     // 2.5-Second Main Screen Refresh & Heart Animation
     if (millis() - lastAnimationToggle >= 2500) {
       lastAnimationToggle = millis(); 
-      heartIsFilled = !heartIsFilled; 
+      heartIsFilled = !heartIsFilled;
+      readAQI(); // DEBUG — remove after Task 3 
 
       float temp = bme.readTemperature();
       float hum = bme.readHumidity();
