@@ -16,6 +16,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Preferences.h>
+#include <Adafruit_VEML7700.h>
 
 // 3. HARDWARE CONFIGURATIONS BELOW
 #define I2C_SDA 8
@@ -55,11 +56,13 @@ String blynkAuthKey = BLYNK_AUTH_TOKEN;
 float tempHistory[MAX_HISTORY_POINTS];
 float presHistory[MAX_HISTORY_POINTS];
 float humHistory[MAX_HISTORY_POINTS];
+float luxHistory[MAX_HISTORY_POINTS];
 int historyCount = 0;
 unsigned long lastHistoryLogTime = 0;
 const unsigned long logInterval = 300000; 
 
 Adafruit_BME280 bme;
+Adafruit_VEML7700 veml;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 WebServer server(80);
 
@@ -91,8 +94,11 @@ void handlePortalRoot();
 void handlePortalSave();
 void handleRoot();
 void initWiFi();
-void logHistoryData(float currentTemp, float currentPres, float currentHum);
+void logHistoryData(float currentTemp, float currentPres, float currentHum, float currentLux);
 String generateSVGChart(float data[], int count, String strokeColor, float minVal, float maxVal, String unit);
+float calculateDewPoint(float t, float h);
+float calculateHeatIndex(float t, float h);
+float readLux();
 
 // --- SVG CHART GENERATOR ENGINE ---
 String generateSVGChart(float data[], int count, String strokeColor, float minVal, float maxVal, String unit) {
@@ -164,8 +170,11 @@ void updateThingSpeakCloud(float t, float h, float p) {
     
     String tsData = "api_key=" + String(tsAPIKey) + 
                     "&field1=" + String(t, 1) + 
-                    "&field2=" + String((int)h) + 
-                    "&field3=" + String(p, 0);
+                    "&field2=" + String(h, 1) + 
+                    "&field3=" + String(p, 2) +
+                    "&field4=" + String(calculateDewPoint(t, h), 1) +
+                    "&field5=" + String(calculateHeatIndex(t, h), 1) +
+                    "&field6=" + String(readLux(), 0);
 
     client.print("POST /update HTTP/1.1\r\n");
     client.print("Host: api.thingspeak.com\r\n");
@@ -209,6 +218,29 @@ void updateThingSpeakCloud(float t, float h, float p) {
   } else {
     Serial.println("[ERROR] Cloud connection to ThingSpeak failed.");
   }
+}
+
+// --- DEW POINT (Magnus formula) ---
+float calculateDewPoint(float t, float h) {
+  const float a = 17.625, b = 243.04;
+  float gamma = log(h / 100.0) + (a * t) / (b + t);
+  return (b * gamma) / (a - gamma);
+}
+
+// --- HEAT INDEX / "FEELS LIKE" (Steadman simplified) ---
+float calculateHeatIndex(float t, float h) {
+  // Below 27°C just return actual temp — heat index is not meaningful
+  if (t < 27.0) return t;
+  float hi = -8.78469475556 + 1.61139411 * t + 2.33854883889 * h
+             - 0.14611605 * t * h - 0.012308094 * t * t
+             - 0.016424828 * h * h + 0.002211732 * t * t * h
+             + 0.00072546 * t * h * h - 0.000003582 * t * t * h * h;
+  return hi;
+}
+
+// --- LUX READER ---
+float readLux() {
+  return veml.readLux();
 }
 
 void handlePortalRoot() {
@@ -275,9 +307,12 @@ void handlePortalSave() {
 void updateBlynkCloud(float t, float h, float p) {
   // Check if Blynk engine is actively connected to the server
   if (Blynk.connected()) {
-    Blynk.virtualWrite(V1, t);       // Send temp to pipe V1
-    Blynk.virtualWrite(V2, (int)h);  // Send humidity to pipe V2
-    Blynk.virtualWrite(V3, p);       // Send pressure to pipe V3
+    Blynk.virtualWrite(V1, t);
+    Blynk.virtualWrite(V2, h);
+    Blynk.virtualWrite(V3, p);
+    Blynk.virtualWrite(V4, calculateDewPoint(t, h));
+    Blynk.virtualWrite(V5, calculateHeatIndex(t, h));
+    Blynk.virtualWrite(V6, readLux());
     Serial.println("[BLYNK CLOUD] Real-time metrics pushed to smartphone app!");
   }
 }
@@ -351,6 +386,9 @@ void handleRoot() {
   float hum = bme.readHumidity();
   float pres = bme.readPressure() / 100.0F;
   float alt = bme.readAltitude(SEALEVELPRESSURE_HPA);
+  float dew = calculateDewPoint(temp, hum);
+  float feelsLike = calculateHeatIndex(temp, hum);
+  float lux = readLux();
 
   String html = "<!DOCTYPE html><html>";
   html += "<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">";
@@ -380,6 +418,9 @@ void handleRoot() {
   html += "<div class='card hum'><div class='label'>Humidity</div><div class='value'>" + String((int)hum) + "<span class='unit'>%</span></div></div>";
   html += "<div class='card pres'><div class='label'>Pressure</div><div class='value'>" + String(pres, 0) + "<span class='unit'>hPa</span></div></div>";
   html += "<div class='card alt'><div class='label'>Altitude</div><div class='value'>" + String(alt, 0) + "<span class='unit'>m</span></div></div>";
+  html += "<div class='card' style='border-left-color:#06b6d4;'><div class='label'>Dew Point</div><div class='value'>" + String(dew, 1) + "<span class='unit'>&deg;C</span></div></div>";
+  html += "<div class='card' style='border-left-color:#f97316;'><div class='label'>Feels Like</div><div class='value'>" + String(feelsLike, 1) + "<span class='unit'>&deg;C</span></div></div>";
+  html += "<div class='card' style='border-left-color:#facc15;'><div class='label'>Light</div><div class='value'>" + String(lux, 0) + "<span class='unit'>lx</span></div></div>";
   html += "</div>";
 
   html += "<div class='card' style='width:100%;max-width:450px;border-left-color:#e2e8f0;margin-bottom:15px;box-sizing:border-box;'>";
@@ -389,16 +430,19 @@ void handleRoot() {
   float minT = 20.0, maxT = 30.0;
   float minP = 980.0, maxP = 1020.0;
   float minH = 30.0, maxH = 70.0;
+  float minL = 0.0,  maxL = 1000.0;
 
   if (historyCount > 0) {
     minT = tempHistory[0]; maxT = tempHistory[0];
     minP = presHistory[0]; maxP = presHistory[0];
-    minH = humHistory[0]; maxH = humHistory[0];
+    minH = humHistory[0];  maxH = humHistory[0];
+    minL = luxHistory[0];  maxL = luxHistory[0];
     
     for(int i = 0; i < historyCount; i++) {
       if(tempHistory[i] < minT) minT = tempHistory[i]; if(tempHistory[i] > maxT) maxT = tempHistory[i];
       if(presHistory[i] < minP) minP = presHistory[i]; if(presHistory[i] > maxP) maxP = presHistory[i];
       if(humHistory[i] < minH) minH = humHistory[i];   if(humHistory[i] > maxH) maxH = humHistory[i];
+      if(luxHistory[i] < minL) minL = luxHistory[i];   if(luxHistory[i] > maxL) maxL = luxHistory[i];
     }
     
     minT -= 1.0; maxT += 1.0; 
@@ -413,28 +457,32 @@ void handleRoot() {
   html += "<div class='chart-container'><h3>24h Temperature History (&deg;C)</h3>" + generateSVGChart(tempHistory, historyCount, "#f59e0b", minT, maxT, "&deg;") + "</div>";
   html += "<div class='chart-container'><h3>24h Humidity History (%)</h3>" + generateSVGChart(humHistory, historyCount, "#3b82f6", minH, maxH, "%") + "</div>";
   html += "<div class='chart-container'><h3>24h Pressure History (hPa)</h3>" + generateSVGChart(presHistory, historyCount, "#10b981", minP, maxP, "hPa") + "</div>";
+  html += "<div class='chart-container'><h3>24h Light History (lx)</h3>" + generateSVGChart(luxHistory, historyCount, "#facc15", minL, maxL, "lx") + "</div>";
 
   html += "</body></html>";
   server.send(200, "text/html", html);
 }
 
-void logHistoryData(float currentTemp, float currentPres, float currentHum) {
+void logHistoryData(float currentTemp, float currentPres, float currentHum, float currentLux) {
   if (historyCount < MAX_HISTORY_POINTS) {
     tempHistory[historyCount] = currentTemp;
     presHistory[historyCount] = currentPres;
     humHistory[historyCount] = currentHum;
+    luxHistory[historyCount] = currentLux;
     historyCount++;
   } else {
     for (int i = 0; i < MAX_HISTORY_POINTS - 1; i++) {
       tempHistory[i] = tempHistory[i + 1];
       presHistory[i] = presHistory[i + 1];
       humHistory[i] = humHistory[i + 1];
+      luxHistory[i] = luxHistory[i + 1];
     }
     tempHistory[MAX_HISTORY_POINTS - 1] = currentTemp;
     presHistory[MAX_HISTORY_POINTS - 1] = currentPres;
     humHistory[MAX_HISTORY_POINTS - 1] = currentHum;
+    luxHistory[MAX_HISTORY_POINTS - 1] = currentLux;
   }
-  Serial.println("[SYSTEM LOG] Captured history data point (Temp, Pres, Hum).");
+  Serial.println("[SYSTEM LOG] Captured history data point (Temp, Pres, Hum, Lux).");
 }
 
 void updateDisplayConnecting() {
@@ -520,6 +568,13 @@ void setup() {
   if (!bme.begin(0x76, &Wire)) {
     Serial.println("[ERROR] Could not find a valid BME280 sensor, check wiring!");
   }
+
+  if (!veml.begin()) {
+    Serial.println("[ERROR] Could not find VEML7700 sensor, check wiring!");
+  } else {
+    veml.setGain(VEML7700_GAIN_1);
+    veml.setIntegrationTime(VEML7700_IT_100MS);
+  }
   
   display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS);
   display.clearDisplay();
@@ -581,7 +636,7 @@ void setup() {
   float currentP = bme.readPressure() / 100.0F;
   float currentH = bme.readHumidity();
 
-  logHistoryData(currentT, currentP, currentH);
+  logHistoryData(currentT, currentP, currentH, readLux());
   
 // Only push to cloud if we have an internet connection AND a key is actually written
   // Only push to cloud platforms if we actually have an active internet router connection
@@ -623,7 +678,7 @@ void loop() {
       float currentP = bme.readPressure() / 100.0F;
       float currentH = bme.readHumidity();
 
-      logHistoryData(currentT, currentP, currentH);
+      logHistoryData(currentT, currentP, currentH, readLux());
 
       // Explicit Cloud upload validation
       if (tsAPIKey != "") {
