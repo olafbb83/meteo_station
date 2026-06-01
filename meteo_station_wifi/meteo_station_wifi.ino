@@ -80,11 +80,15 @@ unsigned long lastAnimationToggle = 0;
 bool heartIsFilled = true;
 
 // --- Zambretti Forecast Engine Config ---
-#define TREND_WINDOW_SIZE 36 // 3 hours of data (12 samples/hour * 3)
-float pressureHistory[TREND_WINDOW_SIZE];
+#define TREND_WINDOW_3H   36  // 3 hours  (12 samples/hour * 3)
+#define TREND_WINDOW_24H 288  // 24 hours (12 samples/hour * 24)
+#define TREND_WINDOW_SIZE TREND_WINDOW_3H  // keep alias for compatibility
+float pressureHistory[TREND_WINDOW_3H];
+float pressureHistory24h[TREND_WINDOW_24H];
 int zambrettiCount = 0;
+int zambrettiCount24h = 0;
 
-enum Trend { TREND_FALLING, TREND_STEADY, TREND_RISING };
+enum Trend { TREND_FALLING_FAST, TREND_FALLING_SLOW, TREND_STEADY, TREND_RISING_SLOW, TREND_RISING_FAST };
 String zambrettiForecast = "Calibrating...";
 
 // --- PROTOTYPES / FORWARD DECLARATIONS ---
@@ -99,6 +103,8 @@ String generateSVGChart(float data[], int count, String strokeColor, float minVa
 float calculateDewPoint(float t, float h);
 float calculateHeatIndex(float t, float h);
 float readLux();
+String applyLuxModifier(String forecast, float lux);
+String applyHumidityModifier(String forecast, float hum);
 
 // --- SVG CHART GENERATOR ENGINE ---
 String generateSVGChart(float data[], int count, String strokeColor, float minVal, float maxVal, String unit) {
@@ -134,32 +140,82 @@ String generateSVGChart(float data[], int count, String strokeColor, float minVa
 
 String calculateZambretti(float currentPressure, float pressure3HoursAgo) {
     float delta = currentPressure - pressure3HoursAgo;
-    Trend trend = TREND_STEADY;
-    
-    // Define thresholds: change greater than 1.5 hPa over 3 hours is significant
-    if (delta <= -1.5) trend = TREND_FALLING;
-    else if (delta >= 1.5) trend = TREND_RISING;
+    Trend trend;
+    if      (delta <= -3.0) trend = TREND_FALLING_FAST;
+    else if (delta <= -1.5) trend = TREND_FALLING_SLOW;
+    else if (delta >=  3.0) trend = TREND_RISING_FAST;
+    else if (delta >=  1.5) trend = TREND_RISING_SLOW;
+    else                    trend = TREND_STEADY;
 
-    // 1. FALLING PRESSURE (Weather worsening)
-    if (trend == TREND_FALLING) {
-        if (currentPressure > 1020 + LOCAL_PRESSURE_OFFSET) return "Fair, Worsening";
-        if (currentPressure <= 1020 + LOCAL_PRESSURE_OFFSET && currentPressure > 1010 + LOCAL_PRESSURE_OFFSET) return "Showers Likely";
-        if (currentPressure <= 1010 + LOCAL_PRESSURE_OFFSET && currentPressure > 1000 + LOCAL_PRESSURE_OFFSET) return "Rain, Wind";
+    float p = currentPressure;
+    float hi = 1020 + LOCAL_PRESSURE_OFFSET;
+    float mi = 1010 + LOCAL_PRESSURE_OFFSET;
+    float lo = 1000 + LOCAL_PRESSURE_OFFSET;
+
+    // 1. FALLING FAST
+    if (trend == TREND_FALLING_FAST) {
+        if (p > hi) return "Deteriorating Rapidly";
+        if (p > mi) return "Rain & Wind";
         return "Storm Approaching!";
     }
-    
-    // 2. RISING PRESSURE (Weather improving)
-    if (trend == TREND_RISING) {
-        if (currentPressure < 1000 + LOCAL_PRESSURE_OFFSET) return "Clearing Storm";
-        if (currentPressure >= 1000 + LOCAL_PRESSURE_OFFSET && currentPressure < 1015 + LOCAL_PRESSURE_OFFSET) return "Fairing Up";
-        if (currentPressure >= 1015 + LOCAL_PRESSURE_OFFSET && currentPressure < 1025 + LOCAL_PRESSURE_OFFSET) return "Settled Fine";
+    // 2. FALLING SLOW
+    if (trend == TREND_FALLING_SLOW) {
+        if (p > hi) return "Fair, Worsening";
+        if (p > mi) return "Showers Likely";
+        return "Rain Expected";
+    }
+    // 3. RISING FAST
+    if (trend == TREND_RISING_FAST) {
+        if (p < lo) return "Clearing Storm";
+        if (p < mi) return "Improving Rapidly";
         return "High Pressure, Sunny";
     }
-    
-    // 3. STEADY PRESSURE (Weather staying the same)
-    if (currentPressure > 1015 + LOCAL_PRESSURE_OFFSET) return "Settled Fine";
-    if (currentPressure <= 1015 + LOCAL_PRESSURE_OFFSET && currentPressure > 1008 + LOCAL_PRESSURE_OFFSET) return "Partly Cloudy";
+    // 4. RISING SLOW
+    if (trend == TREND_RISING_SLOW) {
+        if (p < lo) return "Fairing Up";
+        if (p < 1015 + LOCAL_PRESSURE_OFFSET) return "Settled Fine";
+        return "High Pressure, Sunny";
+    }
+    // 5. STEADY
+    if (p > 1015 + LOCAL_PRESSURE_OFFSET) return "Settled Fine";
+    if (p > 1008 + LOCAL_PRESSURE_OFFSET) return "Partly Cloudy";
     return "Unsettled/Rainy";
+}
+
+// --- LUX FORECAST MODIFIER ---
+String applyLuxModifier(String forecast, float lux) {
+  // Skip lux correction at night
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    int hour = timeinfo.tm_hour;
+    if (hour >= 22 || hour < 6) return forecast;
+  }
+
+  if (lux >= LUX_BRIGHT_SUN) {
+    if (forecast == "Settled Fine")        return "Settled Fine, Sunny";
+    if (forecast == "High Pressure, Sunny") return forecast; // already sunny
+    if (forecast == "Partly Cloudy")       return "Partly Cloudy, Brightening";
+  } else if (lux < LUX_OVERCAST) {
+    if (forecast == "Settled Fine")        return "Settled, Overcast";
+    if (forecast == "High Pressure, Sunny") return "High Pressure, Cloudy";
+  }
+  return forecast;
+}
+
+// --- HUMIDITY FORECAST MODIFIER ---
+String applyHumidityModifier(String forecast, float hum) {
+  if (hum >= HUM_HIGH) {
+    if (forecast == "Partly Cloudy")      return "Fog/Mist Risk";
+    if (forecast.indexOf("Worsening") >= 0 ||
+        forecast.indexOf("Showers")   >= 0 ||
+        forecast.indexOf("Rain")      >= 0) return forecast + " / High Humidity";
+  } else if (hum <= HUM_LOW) {
+    if (forecast == "Settled Fine")        return "Settled Fine, Dry";
+    if (forecast == "Settled Fine, Sunny") return "Settled Fine, Sunny & Dry";
+    if (forecast.indexOf("Improving") >= 0 ||
+        forecast.indexOf("Fairing")   >= 0) return forecast + " / Dry";
+  }
+  return forecast;
 }
 
 void updateThingSpeakCloud(float t, float h, float p) {
@@ -689,21 +745,52 @@ void loop() {
       if (blynkAuthKey != "") updateBlynkCloud(currentT, currentH, currentP);
 
       // Execute this block inside your 5-minute timer loop!
-      float currentPressure = bme.readPressure() / 100.0F; // Get hPa
+      float currentPressure = bme.readPressure() / 100.0F;
 
-      // Shift history array to make room for the new reading
-      for (int i = 0; i < TREND_WINDOW_SIZE - 1; i++) {
+      // Shift both history windows
+      for (int i = 0; i < TREND_WINDOW_3H - 1; i++)
           pressureHistory[i] = pressureHistory[i + 1];
-      }
-      pressureHistory[TREND_WINDOW_SIZE - 1] = currentPressure;
+      pressureHistory[TREND_WINDOW_3H - 1] = currentPressure;
 
-      if (zambrettiCount < TREND_WINDOW_SIZE) {
-          zambrettiCount++;
-          zambrettiForecast = "Gathering Data (" + String(zambrettiCount) + "/" + String(TREND_WINDOW_SIZE) + ")";
+      for (int i = 0; i < TREND_WINDOW_24H - 1; i++)
+          pressureHistory24h[i] = pressureHistory24h[i + 1];
+      pressureHistory24h[TREND_WINDOW_24H - 1] = currentPressure;
+
+      if (zambrettiCount < TREND_WINDOW_3H) zambrettiCount++;
+      if (zambrettiCount24h < TREND_WINDOW_24H) zambrettiCount24h++;
+
+      if (zambrettiCount < TREND_WINDOW_3H) {
+          zambrettiForecast = "Gathering Data (" + String(zambrettiCount) + "/" + String(TREND_WINDOW_3H) + ")";
       } else {
-          // We have a full 3 hours of data! Run the engine.
-          float pressure3HoursAgo = pressureHistory[0];
-          zambrettiForecast = calculateZambretti(currentPressure, pressure3HoursAgo);
+          float lux = readLux();
+          float hum = bme.readHumidity();
+
+          // Apply diurnal correction based on current hour
+          float diurnal[24] = DIURNAL_CORRECTION;
+          struct tm timeinfo;
+          float correctedPressure = currentPressure;
+          if (getLocalTime(&timeinfo))
+              correctedPressure -= diurnal[timeinfo.tm_hour];
+
+          // 3h forecast — fast signals (storms, rapid changes)
+          String forecast3h = calculateZambretti(correctedPressure, pressureHistory[0]);
+
+          // 24h forecast — slow signals (settled, improving) if window is full
+          String base;
+          if (zambrettiCount24h >= TREND_WINDOW_24H) {
+              String forecast24h = calculateZambretti(correctedPressure, pressureHistory24h[0]);
+              // Prefer 3h for worsening, 24h for improving/settled
+              bool worsening3h = (forecast3h.indexOf("Storm")   >= 0 ||
+                                  forecast3h.indexOf("Rain")    >= 0 ||
+                                  forecast3h.indexOf("Wind")    >= 0 ||
+                                  forecast3h.indexOf("Showers") >= 0);
+              base = worsening3h ? forecast3h : forecast24h;
+          } else {
+              base = forecast3h;
+          }
+
+          base = applyLuxModifier(base, lux);
+          zambrettiForecast = applyHumidityModifier(base, hum);
       }
     }
 

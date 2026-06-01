@@ -1,77 +1,160 @@
-# 🌦️ Advanced Smart Meteo Station (ESP32-S3 + BME280)
+# 🌦️ Advanced Smart Meteo Station (ESP32-S3 + BME280 + VEML7700)
 
-A professional-grade, multi-cloud IoT Weather Station powered by an **ESP32-S3**. This station captures high-precision local climate metrics (Temperature, Humidity, Barometric Pressure, and Altitude) and presents them across four independent interfaces: a physical OLED display, a local web server interface, long-term historical cloud analytics via **ThingSpeak**, and a beautiful, real-time native smartphone app using **Blynk**.
+A professional-grade, multi-cloud IoT Weather Station powered by an **ESP32-S3**. Captures high-precision local climate metrics (Temperature, Humidity, Barometric Pressure, Altitude, Light Level, Dew Point, Feels Like) and presents them across four independent interfaces: a physical OLED display, a local web server dashboard, long-term cloud analytics via **ThingSpeak**, and a real-time smartphone app using **Blynk**.
 
-Featuring a **bulletproof software onboarding captive portal** and an **RTC hardware double-reset escape hatch**, this device is completely dynamic—built to be safely gifted, moved, and reconfigured across different Wi-Fi networks and private cloud accounts without ever needing to touch a line of code.
+Featuring a **bulletproof software onboarding captive portal**, an **RTC hardware double-reset escape hatch**, and a **multi-layer weather forecast engine** (Zambretti + lux + humidity + diurnal correction).
 
 ---
 
 ## 🚀 Key Features
 
 * **Quad-Interface Telemetry:**
-    * **On-Device OLED:** Animated 128x64 display tracking metrics, a beating pulse heartbeat icon, local IP address, network time synchronization (NTP), and live barometric trend indicators (`^` / `v`).
-    * **Local Web Server (`192.168.1.50`):** A custom dark-themed local dashboard showing responsive climate cards alongside dynamically rendered **24-hour SVG line charts** (generated natively on the ESP32 chip).
-    * **ThingSpeak Analytics:** Long-term global historical database logging for tracking multi-week weather patterns.
-    * **Blynk Mobile App:** Premium smartphone dashboard featuring live-updating gauges, status lights, and real-time interactive charting over cellular data.
-* **Commercial Onboarding Portal:** If the station cannot connect to a saved Wi-Fi network, it automatically drops into Access Point Mode, broadcasting its own secure configuration hotspot network (`Meteo-Station-Setup`) allowing any smartphone to dynamically input local Wi-Fi credentials, a custom ThingSpeak API Key, and a custom Blynk Auth Token.
-* **Hardware Escape Hatch (Double-Reset Detection):** Utilizing deep processor RTC memory registers, pressing the hardware reset button twice rapidly (within 3.5 seconds) completely wipes saved credentials from internal Flash memory (`Preferences`), serving as a manual factory reset.
+    * **On-Device OLED:** Animated 128x64 display with beating pulse heartbeat icon, live T/H/P/Altitude, NTP time, IP address, and barometric trend arrows (`^` / `v`).
+    * **Local Web Server:** Dark-themed responsive dashboard with 7 metric cards and dynamically rendered **24-hour SVG line charts** for Temperature, Humidity, Pressure, and Light — all generated natively on the ESP32 chip.
+    * **ThingSpeak Analytics:** Long-term cloud logging across 6 fields for multi-week weather pattern analysis.
+    * **Blynk Mobile App:** Smartphone dashboard with live gauges on 6 virtual pins.
+
+* **Multi-Layer Forecast Engine (Zambretti++):**
+    * **5-level pressure trend** — distinguishes fast vs slow rises/falls (±1.5 and ±3.0 hPa/3h thresholds)
+    * **Dual trend window** — 3h window for fast storm detection, 24h window for stable settled/improving patterns
+    * **Lux cross-reference** — confirms or upgrades forecast using ambient light (night-aware, skips correction between 22:00–06:00)
+    * **Humidity secondary signal** — high humidity flags fog/mist risk and rain certainty; low humidity confirms dry clearing
+    * **Diurnal pressure correction** — 24-point hourly lookup table removes the natural atmospheric tide (~0.9 hPa amplitude) to eliminate false alarms
+
+* **Commercial Onboarding Portal:** Drops into AP mode (`Meteo-Station-Setup`) when no Wi-Fi credentials are saved, allowing any smartphone to configure Wi-Fi, ThingSpeak API key, and Blynk token at `192.168.4.1`.
+
+* **Hardware Escape Hatch (Double-Reset Detection):** Two resets within 3.5 seconds wipes all saved credentials from NVS flash and relaunches the onboarding portal.
 
 ---
 
 ## 🛠️ Hardware Requirements
 
 * **Microcontroller:** ESP32-S3 (Dual-Core XTensa, 2.4GHz Wi-Fi)
-* **Sensor:** Bosch BME280 Environmental Sensor (I2C Variant)
-* **Display:** SSD1306 128x64 I2C OLED display (Yellow/Blue split-zone ideal)
-* **Wiring Topology (I2C Bus):**
-    * `GPIO 8` ➡️ **SDA** (Shared between Sensor & OLED)
-    * `GPIO 9` ➡️ **SCL** (Shared between Sensor & OLED)
-    * `3.3V`   ➡️ **VCC**
-    * `GND`    ➡️ **GND**
+* **Environmental Sensor:** Bosch BME280 (I2C, address `0x76`)
+* **Light Sensor:** Adafruit VEML7700 (I2C, address `0x10`)
+* **Display:** SSD1306 128x64 I2C OLED (address `0x3C`, Yellow/Blue split-zone ideal)
+
+### Wiring — Shared I2C Bus
+
+| Signal | ESP32-S3 Pin | Connected To |
+|---|---|---|
+| SDA | GPIO 8 | BME280 + VEML7700 + OLED |
+| SCL | GPIO 9 | BME280 + VEML7700 + OLED |
+| VCC | 3.3V | All three devices |
+| GND | GND | All three devices |
+
+> **VEML7700 note:** Connect VIN to 3.3V. Leave the 3Vo pin unconnected.
 
 ---
 
 ## 💾 Software Installation & Dependencies
 
-To compile this project, ensure you have the **Arduino IDE** or **VS Code + PlatformIO** configured for ESP32 boards. Install the following libraries through your library manager:
+Configure **Arduino IDE** or **VS Code + PlatformIO** for ESP32 boards, then install:
 
-1.  `Blynk` (by Volodymyr Shymanskyy)
-2.  `Adafruit BME280 Library`
-3.  `Adafruit SSD1306`
-4.  `Adafruit GFX Library`
+1. `Blynk` (by Volodymyr Shymanskyy)
+2. `Adafruit BME280 Library`
+3. `Adafruit VEML7700 Library`
+4. `Adafruit SSD1306`
+5. `Adafruit GFX Library`
 
 ### ⚠️ Preprocessor Order Note
-To compile cleanly without library compilation failures, your main `.ino` file must keep the `#define BLYNK_...` templates grouped at the absolute **top of the document** preceding any header `#include` statements.
+The `#define BLYNK_TEMPLATE_ID` and `#define BLYNK_TEMPLATE_NAME` macros must appear at the **absolute top** of the `.ino` file, before any `#include` statements.
+
+---
+
+## ⚙️ Configuration Files
+
+### `secrets.h`
+Compile-time credential fallbacks (used if no credentials are saved in NVS flash):
+```cpp
+#define SECRET_SSID        "your_wifi_ssid"
+#define SECRET_PASS        "your_wifi_password"
+#define SECRET_TS_KEY      "your_thingspeak_write_key"
+#define SECRET_BLYNK_TOKEN "your_blynk_auth_token"
+```
+> ⚠️ This file is gitignored. Never commit real credentials.
+
+### `settings.h`
+Local tuning parameters — adjust without touching firmware logic:
+```cpp
+#define LOCAL_PRESSURE_OFFSET  (-16.25)  // hPa offset for local elevation
+#define LUX_BRIGHT_SUN         10000.0   // lux threshold for direct sun
+#define LUX_OVERCAST             500.0   // lux threshold for heavy overcast
+#define LUX_NIGHT                 10.0   // lux threshold for night
+#define HUM_HIGH                  85.0   // % — high humidity modifier trigger
+#define HUM_LOW                   40.0   // % — low humidity modifier trigger
+#define DIURNAL_CORRECTION { ... }       // 24-point hourly pressure correction table
+```
 
 ---
 
 ## 📖 User Configuration & Operating Manual
 
 ### 1. Initial Out-of-the-Box Setup
-1. Turn the Meteo Station on by plugging it into a USB port or power brick.
-2. The OLED display will show **`1. CONNECT TO WI-FI: Meteo-Station-Setup`** and **`2. GO TO: 192.168.4.1`**.
-3. Open your smartphone's Wi-Fi settings, connect to the **Meteo-Station-Setup** network, and open a web browser to `192.168.4.1`.
-4. Enter your home Wi-Fi Network Name (SSID), Password, your ThingSpeak Write API key, and your Blynk Auth Token.
-5. Click **Connect Station**. The device will save your details directly into its secure storage vault, close the hotspot, and reboot into active tracking mode.
+1. Power on the station via USB or power brick.
+2. OLED shows: **`1. CONNECT TO WI-FI: Meteo-Station-Setup`** and **`2. GO TO: 192.168.4.1`**.
+3. Connect your smartphone to the `Meteo-Station-Setup` hotspot and open `192.168.4.1`.
+4. Enter Wi-Fi SSID, Password, ThingSpeak Write API Key, and Blynk Auth Token.
+5. Tap **Connect Station** — credentials are saved to NVS flash, the hotspot closes, and the device reboots into active mode.
 
 ### 2. Cloud Integration Architecture
-To view data across your global dashboards, assign your platform endpoints as follows:
 
-* **ThingSpeak Configuration:**
-    * Enable **Field 1** (Temperature), **Field 2** (Humidity), and **Field 3** (Pressure) in your channel settings page.
-* **Blynk App Pin Map:**
-    * `Virtual Pin V1` ➡️ Temperature (Double/Float)
-    * `Virtual Pin V2` ➡️ Humidity (Integer)
-    * `Virtual Pin V3` ➡️ Pressure (Double/Float)
+**ThingSpeak — enable all 6 fields:**
+
+| Field | Metric | Format |
+|---|---|---|
+| Field 1 | Temperature | x.x °C |
+| Field 2 | Humidity | x.x % |
+| Field 3 | Pressure | x.xx hPa |
+| Field 4 | Dew Point | x.x °C |
+| Field 5 | Feels Like (Heat Index) | x.x °C |
+| Field 6 | Light Level | x lux |
+
+**Blynk App — Virtual Pin Map:**
+
+| Pin | Metric | Widget Type |
+|---|---|---|
+| V1 | Temperature | Gauge / Float |
+| V2 | Humidity | Gauge / Float |
+| V3 | Pressure | Gauge / Float |
+| V4 | Dew Point | Gauge / Float |
+| V5 | Feels Like | Gauge / Float |
+| V6 | Light Level | Gauge / Integer |
 
 ### 3. Factory Reset Escape Hatch
-If you change your home router, get a new password, or want to gift the physical device to a friend:
-1. Locate the physical **RST** button on the ESP32 board (or unplug/replug the power cable).
-2. Press the reset button, wait 1 second, and press it **again** immediately.
-3. The OLED screen will safely interrupt the sequence, flash **`SETTINGS CLEARED! Opening Portal...`**, wipe the internal storage flash memory clean, and re-broadcast the onboarding portal configuration network.
+1. Press the **RST** button on the ESP32.
+2. Within 3.5 seconds, press **RST** again.
+3. OLED flashes **`SETTINGS CLEARED! Opening Portal...`**, wipes NVS flash, and relaunches the onboarding portal.
+
+---
+
+## 🔬 Derived Metrics
+
+| Metric | Formula | Notes |
+|---|---|---|
+| **Dew Point** | Magnus formula | Accurate to ±0.35°C |
+| **Feels Like** | Steadman full regression (NOAA/NWS) | Returns actual temp below 27°C |
+| **Zambretti Forecast** | Multi-layer engine (see below) | Updates every 5 minutes |
+
+### Zambretti Forecast Engine
+
+The forecast pipeline runs every 5 minutes:
+
+```
+Raw Pressure
+  → Diurnal correction (24-point hourly table)
+  → calculateZambretti() [3h window]  ─┐
+  → calculateZambretti() [24h window] ─┴→ pick stronger signal
+  → applyLuxModifier()   (night-aware)
+  → applyHumidityModifier()
+  → zambrettiForecast string
+```
+
+Forecast strings include: `Settled Fine`, `Settled Fine, Sunny`, `Settled Fine, Dry`, `Partly Cloudy`, `Fog/Mist Risk`, `Fair, Worsening`, `Showers Likely`, `Rain Expected`, `Rain & Wind`, `Storm Approaching!`, `Deteriorating Rapidly`, `Fairing Up`, `Improving Rapidly`, `Clearing Storm`, `High Pressure, Sunny`, `High Pressure, Cloudy`, and more.
 
 ---
 
 ## 🔒 Safety & Stability Features
-* **Rate Limit Protection:** Free cloud accounts restrict updates. The background logging system relies on non-blocking `millis()` delta tracking timers set to 5-minute segments (`300000ms`), preventing account rate blocking while keeping your local 2.5-second OLED heart-pulse fluid.
-* **String Fail-safes:** Leaving cloud inputs completely blank inside the setup dashboard causes the background state controller to automatically shut down outbound internet traffic loops, preventing memory overruns and saving processor cycles.
+* **Rate Limit Protection:** Cloud updates use non-blocking `millis()` timers at 5-minute intervals (`300000ms`), respecting free-tier ThingSpeak and Blynk rate limits while keeping the OLED refresh fluid at 2.5 seconds.
+* **String Fail-safes:** Blank API key or Blynk token fields disable outbound cloud traffic for that service, preventing memory overruns.
+* **Sensor Fault Tolerance:** Missing BME280 or VEML7700 at boot logs an error to Serial and continues — the station won't crash if a sensor is disconnected.
