@@ -58,6 +58,7 @@ float tempHistory[MAX_HISTORY_POINTS];
 float presHistory[MAX_HISTORY_POINTS];
 float humHistory[MAX_HISTORY_POINTS];
 float luxHistory[MAX_HISTORY_POINTS];
+float aqiHistory[MAX_HISTORY_POINTS];
 int historyCount = 0;
 unsigned long lastHistoryLogTime = 0;
 const unsigned long logInterval = 300000; 
@@ -99,7 +100,7 @@ void handlePortalRoot();
 void handlePortalSave();
 void handleRoot();
 void initWiFi();
-void logHistoryData(float currentTemp, float currentPres, float currentHum, float currentLux);
+void logHistoryData(float currentTemp, float currentPres, float currentHum, float currentLux, float currentAqi);
 String generateSVGChart(float data[], int count, String strokeColor, float minVal, float maxVal, String unit);
 float calculateDewPoint(float t, float h);
 float calculateHeatIndex(float t, float h);
@@ -477,6 +478,7 @@ void handleRoot() {
   float dew = calculateDewPoint(temp, hum);
   float feelsLike = calculateHeatIndex(temp, hum);
   float lux = readLux();
+  float aqi = readAQI();
 
   String html = "<!DOCTYPE html><html>";
   html += "<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">";
@@ -509,6 +511,7 @@ void handleRoot() {
   html += "<div class='card' style='border-left-color:#06b6d4;'><div class='label'>Dew Point</div><div class='value'>" + String(dew, 1) + "<span class='unit'>&deg;C</span></div></div>";
   html += "<div class='card' style='border-left-color:#f97316;'><div class='label'>Feels Like</div><div class='value'>" + String(feelsLike, 1) + "<span class='unit'>&deg;C</span></div></div>";
   html += "<div class='card' style='border-left-color:#facc15;'><div class='label'>Light</div><div class='value'>" + String(lux, 0) + "<span class='unit'>lx</span></div></div>";
+  html += "<div class='card' style='border-left-color:#a78bfa;'><div class='label'>Air Quality</div><div class='value'>" + String(aqi, 0) + "<span class='unit'>/100</span></div></div>";
   html += "</div>";
 
   html += "<div class='card' style='width:100%;max-width:450px;border-left-color:#e2e8f0;margin-bottom:15px;box-sizing:border-box;'>";
@@ -519,18 +522,21 @@ void handleRoot() {
   float minP = 980.0, maxP = 1020.0;
   float minH = 30.0, maxH = 70.0;
   float minL = 0.0,  maxL = 1000.0;
+  float minA = 0.0,  maxA = 100.0;
 
   if (historyCount > 0) {
     minT = tempHistory[0]; maxT = tempHistory[0];
     minP = presHistory[0]; maxP = presHistory[0];
     minH = humHistory[0];  maxH = humHistory[0];
     minL = luxHistory[0];  maxL = luxHistory[0];
+    minA = aqiHistory[0];  maxA = aqiHistory[0];
     
     for(int i = 0; i < historyCount; i++) {
       if(tempHistory[i] < minT) minT = tempHistory[i]; if(tempHistory[i] > maxT) maxT = tempHistory[i];
       if(presHistory[i] < minP) minP = presHistory[i]; if(presHistory[i] > maxP) maxP = presHistory[i];
       if(humHistory[i] < minH) minH = humHistory[i];   if(humHistory[i] > maxH) maxH = humHistory[i];
       if(luxHistory[i] < minL) minL = luxHistory[i];   if(luxHistory[i] > maxL) maxL = luxHistory[i];
+      if(aqiHistory[i] < minA) minA = aqiHistory[i];   if(aqiHistory[i] > maxA) maxA = aqiHistory[i];
     }
     
     minT -= 1.0; maxT += 1.0; 
@@ -546,29 +552,33 @@ void handleRoot() {
   html += "<div class='chart-container'><h3>24h Humidity History (%)</h3>" + generateSVGChart(humHistory, historyCount, "#3b82f6", minH, maxH, "%") + "</div>";
   html += "<div class='chart-container'><h3>24h Pressure History (hPa)</h3>" + generateSVGChart(presHistory, historyCount, "#10b981", minP, maxP, "hPa") + "</div>";
   html += "<div class='chart-container'><h3>24h Light History (lx)</h3>" + generateSVGChart(luxHistory, historyCount, "#facc15", minL, maxL, "lx") + "</div>";
+  html += "<div class='chart-container'><h3>24h Air Quality History (AQI)</h3>" + generateSVGChart(aqiHistory, historyCount, "#a78bfa", minA, maxA, "") + "</div>";
 
   html += "</body></html>";
   server.send(200, "text/html", html);
 }
 
-void logHistoryData(float currentTemp, float currentPres, float currentHum, float currentLux) {
+void logHistoryData(float currentTemp, float currentPres, float currentHum, float currentLux, float currentAqi) {
   if (historyCount < MAX_HISTORY_POINTS) {
     tempHistory[historyCount] = currentTemp;
     presHistory[historyCount] = currentPres;
-    humHistory[historyCount] = currentHum;
-    luxHistory[historyCount] = currentLux;
+    humHistory[historyCount]  = currentHum;
+    luxHistory[historyCount]  = currentLux;
+    aqiHistory[historyCount]  = currentAqi;
     historyCount++;
   } else {
     for (int i = 0; i < MAX_HISTORY_POINTS - 1; i++) {
       tempHistory[i] = tempHistory[i + 1];
       presHistory[i] = presHistory[i + 1];
-      humHistory[i] = humHistory[i + 1];
-      luxHistory[i] = luxHistory[i + 1];
+      humHistory[i]  = humHistory[i + 1];
+      luxHistory[i]  = luxHistory[i + 1];
+      aqiHistory[i]  = aqiHistory[i + 1];
     }
     tempHistory[MAX_HISTORY_POINTS - 1] = currentTemp;
     presHistory[MAX_HISTORY_POINTS - 1] = currentPres;
-    humHistory[MAX_HISTORY_POINTS - 1] = currentHum;
-    luxHistory[MAX_HISTORY_POINTS - 1] = currentLux;
+    humHistory[MAX_HISTORY_POINTS - 1]  = currentHum;
+    luxHistory[MAX_HISTORY_POINTS - 1]  = currentLux;
+    aqiHistory[MAX_HISTORY_POINTS - 1]  = currentAqi;
   }
   Serial.println("[SYSTEM LOG] Captured history data point (Temp, Pres, Hum, Lux).");
 
@@ -580,6 +590,7 @@ void logHistoryData(float currentTemp, float currentPres, float currentHum, floa
     f.write((uint8_t*)presHistory,   sizeof(presHistory));
     f.write((uint8_t*)humHistory,    sizeof(humHistory));
     f.write((uint8_t*)luxHistory,    sizeof(luxHistory));
+    f.write((uint8_t*)aqiHistory,    sizeof(aqiHistory));
     f.close();
     Serial.println("[LittleFS] History saved to flash.");
   }
@@ -742,13 +753,33 @@ void setup() {
   // Init LittleFS and load persisted history if available
   if (LittleFS.begin(true)) {
     File f = LittleFS.open("/history.bin", "r");
-    if (f && f.size() == sizeof(historyCount) + sizeof(tempHistory) + sizeof(presHistory) + sizeof(humHistory) + sizeof(luxHistory)) {
+    if (f && f.size() == sizeof(historyCount) + sizeof(tempHistory) + sizeof(presHistory) + sizeof(humHistory) + sizeof(luxHistory) + sizeof(aqiHistory)) {
       f.read((uint8_t*)&historyCount, sizeof(historyCount));
       f.read((uint8_t*)tempHistory,   sizeof(tempHistory));
       f.read((uint8_t*)presHistory,   sizeof(presHistory));
       f.read((uint8_t*)humHistory,    sizeof(humHistory));
       f.read((uint8_t*)luxHistory,    sizeof(luxHistory));
+      f.read((uint8_t*)aqiHistory,    sizeof(aqiHistory));
       Serial.println("[LittleFS] History loaded from flash.");
+
+      // Backfill Zambretti pressure windows from restored history
+      if (historyCount > 0) {
+        // 3h window — copy last min(historyCount, TREND_WINDOW_3H) points
+        int fill3h = min(historyCount, TREND_WINDOW_3H);
+        int src3h  = historyCount - fill3h;
+        for (int i = 0; i < fill3h; i++)
+          pressureHistory[i] = presHistory[src3h + i];
+        zambrettiCount = fill3h;
+
+        // 24h window — copy last min(historyCount, TREND_WINDOW_24H) points
+        int fill24h = min(historyCount, TREND_WINDOW_24H);
+        int src24h  = historyCount - fill24h;
+        for (int i = 0; i < fill24h; i++)
+          pressureHistory24h[i] = presHistory[src24h + i];
+        zambrettiCount24h = fill24h;
+
+        Serial.println("[Zambretti] Pressure windows backfilled from history.");
+      }
     }
     if (f) f.close();
   } else {
@@ -759,7 +790,7 @@ void setup() {
   float currentP = bme.readPressure() / 100.0F;
   float currentH = bme.readHumidity();
 
-  logHistoryData(currentT, currentP, currentH, readLux());
+  logHistoryData(currentT, currentP, currentH, readLux(), readAQI());
   
 // Only push to cloud if we have an internet connection AND a key is actually written
   // Only push to cloud platforms if we actually have an active internet router connection
@@ -801,7 +832,7 @@ void loop() {
       float currentP = bme.readPressure() / 100.0F;
       float currentH = bme.readHumidity();
 
-      logHistoryData(currentT, currentP, currentH, readLux());
+      logHistoryData(currentT, currentP, currentH, readLux(), readAQI());
 
       // Explicit Cloud upload validation
       if (tsAPIKey != "") {

@@ -17,7 +17,7 @@
 // --- MQ-135 Air Quality Sensor ---
 #define MQ135_PIN      3      // GPIO pin for MQ-135 AOUT
 #define MQ135_RL      10.0    // Load resistance on board (kΩ)
-#define MQ135_R0      10.0    // Sensor resistance in clean air (kΩ) — tune after 24-48h burn-in
+#define MQ135_R0      9.24    // Sensor resistance in clean air (kΩ) — calibrated 2026-06-02
 #define MQ135_SAMPLES 10      // ADC samples to average per reading
 
 // --- Diurnal pressure correction table (hPa, one value per hour 0-23) ---

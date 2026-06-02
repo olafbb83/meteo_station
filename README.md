@@ -1,8 +1,8 @@
-# 🌦️ Advanced Smart Meteo Station (ESP32-S3 + BME280 + VEML7700)
+# 🌦️ Advanced Smart Meteo Station (ESP32-S3 + BME280 + VEML7700 + MP-135)
 
-A professional-grade, multi-cloud IoT Weather Station powered by an **ESP32-S3**. Captures high-precision local climate metrics (Temperature, Humidity, Barometric Pressure, Altitude, Light Level, Dew Point, Feels Like) and presents them across four independent interfaces: a physical OLED display, a local web server dashboard, long-term cloud analytics via **ThingSpeak**, and a real-time smartphone app using **Blynk**.
+A professional-grade, multi-cloud IoT Weather Station powered by an **ESP32-S3**. Captures high-precision local climate metrics (Temperature, Humidity, Barometric Pressure, Altitude, Light Level, Dew Point, Feels Like, Air Quality) and presents them across four independent interfaces: a physical OLED display, a local web server dashboard, long-term cloud analytics via **ThingSpeak**, and a real-time smartphone app using **Blynk**.
 
-Featuring a **bulletproof software onboarding captive portal**, an **RTC hardware double-reset escape hatch**, and a **multi-layer weather forecast engine** (Zambretti + lux + humidity + diurnal correction).
+Featuring a **bulletproof software onboarding captive portal**, an **RTC hardware double-reset escape hatch**, **LittleFS persistent chart history**, and a **multi-layer weather forecast engine** (Zambretti + lux + humidity + diurnal correction).
 
 ---
 
@@ -10,9 +10,11 @@ Featuring a **bulletproof software onboarding captive portal**, an **RTC hardwar
 
 * **Quad-Interface Telemetry:**
     * **On-Device OLED:** Animated 128x64 display with beating pulse heartbeat icon, live T/H/P/Altitude, NTP time, IP address, and barometric trend arrows (`^` / `v`).
-    * **Local Web Server:** Dark-themed responsive dashboard with 7 metric cards and dynamically rendered **24-hour SVG line charts** for Temperature, Humidity, Pressure, and Light — all generated natively on the ESP32 chip.
-    * **ThingSpeak Analytics:** Long-term cloud logging across 6 fields for multi-week weather pattern analysis.
-    * **Blynk Mobile App:** Smartphone dashboard with live gauges on 6 virtual pins.
+    * **Local Web Server:** Dark-themed responsive dashboard with metric cards and dynamically rendered **24-hour SVG line charts** for Temperature, Humidity, Pressure, and Light — all generated natively on the ESP32 chip.
+    * **ThingSpeak Analytics:** Long-term cloud logging across 7 fields for multi-week weather pattern analysis.
+    * **Blynk Mobile App:** Smartphone dashboard with live gauges on 7 virtual pins.
+
+* **Persistent Chart History (LittleFS):** Sensor history is saved to internal flash every 5 minutes and restored on reboot — charts survive power cuts and firmware updates.
 
 * **Multi-Layer Forecast Engine (Zambretti++):**
     * **5-level pressure trend** — distinguishes fast vs slow rises/falls (±1.5 and ±3.0 hPa/3h thresholds)
@@ -23,7 +25,7 @@ Featuring a **bulletproof software onboarding captive portal**, an **RTC hardwar
 
 * **Commercial Onboarding Portal:** Drops into AP mode (`Meteo-Station-Setup`) when no Wi-Fi credentials are saved, allowing any smartphone to configure Wi-Fi, ThingSpeak API key, and Blynk token at `192.168.4.1`.
 
-* **Hardware Escape Hatch (Double-Reset Detection):** Two resets within 3.5 seconds wipes all saved credentials from NVS flash and relaunches the onboarding portal.
+* **Hardware Escape Hatch (Double-Reset Detection):** Two resets within 3.5 seconds wipes all saved credentials and chart history from flash, then relaunches the onboarding portal.
 
 ---
 
@@ -32,9 +34,10 @@ Featuring a **bulletproof software onboarding captive portal**, an **RTC hardwar
 * **Microcontroller:** ESP32-S3 (Dual-Core XTensa, 2.4GHz Wi-Fi)
 * **Environmental Sensor:** Bosch BME280 (I2C, address `0x76`)
 * **Light Sensor:** Adafruit VEML7700 (I2C, address `0x10`)
+* **Air Quality Sensor:** MP-135 / MQ-135 module (Analog, GPIO 3)
 * **Display:** SSD1306 128x64 I2C OLED (address `0x3C`, Yellow/Blue split-zone ideal)
 
-### Wiring — Shared I2C Bus
+### Wiring — I2C Bus
 
 | Signal | ESP32-S3 Pin | Connected To |
 |---|---|---|
@@ -44,6 +47,17 @@ Featuring a **bulletproof software onboarding captive portal**, an **RTC hardwar
 | GND | GND | All three devices |
 
 > **VEML7700 note:** Connect VIN to 3.3V. Leave the 3Vo pin unconnected.
+
+### Wiring — MP-135 Air Quality Sensor
+
+| MP-135 Pin | ESP32-S3 Pin | Notes |
+|---|---|---|
+| VCC | 3.3V | Do NOT use 5V — AOUT would exceed ADC range |
+| GND | GND | |
+| AOUT | GPIO 3 | Analog air quality signal |
+| DOUT | Not connected | Digital threshold output, unused |
+
+> **Warm-up note:** The MP-135 requires 24-48h burn-in on first use for a stable baseline. Initial readings will be elevated — this is normal. After burn-in, update `MQ135_R0` in `settings.h` with the clean-air Rs value from Serial Monitor.
 
 ---
 
@@ -56,6 +70,8 @@ Configure **Arduino IDE** or **VS Code + PlatformIO** for ESP32 boards, then ins
 3. `Adafruit VEML7700 Library`
 4. `Adafruit SSD1306`
 5. `Adafruit GFX Library`
+
+> `LittleFS` is bundled with the ESP32 Arduino core — no separate install needed.
 
 ### ⚠️ Preprocessor Order Note
 The `#define BLYNK_TEMPLATE_ID` and `#define BLYNK_TEMPLATE_NAME` macros must appear at the **absolute top** of the `.ino` file, before any `#include` statements.
@@ -83,6 +99,10 @@ Local tuning parameters — adjust without touching firmware logic:
 #define LUX_NIGHT                 10.0   // lux threshold for night
 #define HUM_HIGH                  85.0   // % — high humidity modifier trigger
 #define HUM_LOW                   40.0   // % — low humidity modifier trigger
+#define MQ135_PIN                    3   // GPIO pin for MP-135 AOUT
+#define MQ135_RL                  10.0   // Load resistance on board (kΩ)
+#define MQ135_R0                  10.0   // Clean-air resistance (kΩ) — tune after burn-in
+#define MQ135_SAMPLES               10   // ADC samples to average per reading
 #define DIURNAL_CORRECTION { ... }       // 24-point hourly pressure correction table
 ```
 
@@ -97,9 +117,14 @@ Local tuning parameters — adjust without touching firmware logic:
 4. Enter Wi-Fi SSID, Password, ThingSpeak Write API Key, and Blynk Auth Token.
 5. Tap **Connect Station** — credentials are saved to NVS flash, the hotspot closes, and the device reboots into active mode.
 
-### 2. Cloud Integration Architecture
+### 2. MP-135 Calibration (after 24-48h burn-in)
+1. Place the station in clean outdoor air.
+2. Open Serial Monitor and note the stable `Rs` value from `[AQI]` log lines.
+3. Update `MQ135_R0` in `settings.h` with that value and reflash.
 
-**ThingSpeak — enable all 6 fields:**
+### 3. Cloud Integration Architecture
+
+**ThingSpeak — enable all 7 fields:**
 
 | Field | Metric | Format |
 |---|---|---|
@@ -109,6 +134,7 @@ Local tuning parameters — adjust without touching firmware logic:
 | Field 4 | Dew Point | x.x °C |
 | Field 5 | Feels Like (Heat Index) | x.x °C |
 | Field 6 | Light Level | x lux |
+| Field 7 | Air Quality Index | 0–100 |
 
 **Blynk App — Virtual Pin Map:**
 
@@ -120,11 +146,12 @@ Local tuning parameters — adjust without touching firmware logic:
 | V4 | Dew Point | Gauge / Float |
 | V5 | Feels Like | Gauge / Float |
 | V6 | Light Level | Gauge / Integer |
+| V7 | Air Quality Index | Gauge / Integer |
 
-### 3. Factory Reset Escape Hatch
+### 4. Factory Reset Escape Hatch
 1. Press the **RST** button on the ESP32.
 2. Within 3.5 seconds, press **RST** again.
-3. OLED flashes **`SETTINGS CLEARED! Opening Portal...`**, wipes NVS flash, and relaunches the onboarding portal.
+3. OLED flashes **`SETTINGS CLEARED! Opening Portal...`**, wipes NVS flash and chart history, and relaunches the onboarding portal.
 
 ---
 
@@ -134,6 +161,7 @@ Local tuning parameters — adjust without touching firmware logic:
 |---|---|---|
 | **Dew Point** | Magnus formula | Accurate to ±0.35°C |
 | **Feels Like** | Steadman full regression (NOAA/NWS) | Returns actual temp below 27°C |
+| **Air Quality Index** | Rs/R0 ratio mapped to 0–100 | 0 = cleanest, 100 = most polluted |
 | **Zambretti Forecast** | Multi-layer engine (see below) | Updates every 5 minutes |
 
 ### Zambretti Forecast Engine
@@ -158,3 +186,4 @@ Forecast strings include: `Settled Fine`, `Settled Fine, Sunny`, `Settled Fine, 
 * **Rate Limit Protection:** Cloud updates use non-blocking `millis()` timers at 5-minute intervals (`300000ms`), respecting free-tier ThingSpeak and Blynk rate limits while keeping the OLED refresh fluid at 2.5 seconds.
 * **String Fail-safes:** Blank API key or Blynk token fields disable outbound cloud traffic for that service, preventing memory overruns.
 * **Sensor Fault Tolerance:** Missing BME280 or VEML7700 at boot logs an error to Serial and continues — the station won't crash if a sensor is disconnected.
+* **LittleFS Persistence:** Chart history survives reboots and power cuts. Double-reset wipe also clears the history file for a clean start.
